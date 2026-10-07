@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AssemblyName>DownloadLimit</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeFrameworkVersion>10.0.12</RuntimeFrameworkVersion>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>false</PublishTrimmed>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DownloadLimit.Windows/DownloadLimit.Windows.csproj" />
+    <EmbeddedResource Include="../../.deps/WinDivert/x64/WinDivert.dll" LogicalName="Dependencies.WinDivert.dll" />
+    <EmbeddedResource Include="../../.deps/WinDivert/x64/WinDivert64.sys" LogicalName="Dependencies.WinDivert64.sys" />
+    <EmbeddedResource Include="../../.deps/WinDivert/LICENSE" LogicalName="Dependencies.WinDivert.LICENSE" />
+    <EmbeddedResource Include="../../.deps/WinDivert-2.2.2-Source.zip" LogicalName="Dependencies.WinDivert.Source.zip" />
+    <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.txt" LogicalName="Dependencies.NOTICES" />
+    <EmbeddedResource Include="../../README.md" LogicalName="Dependencies.README" />
+    <EmbeddedResource Include="../../docs/WINDOWS-VALIDATION.md" LogicalName="Dependencies.VALIDATION" />
+    <EmbeddedResource Include="../../docs/DESIGN.md" LogicalName="Dependencies.DESIGN" />
+    <EmbeddedResource Include="../../LICENSE" LogicalName="Dependencies.APP-LICENSE" />
+    <EmbeddedResource Include="../../.deps/DotNet-LICENSE.txt" LogicalName="Dependencies.DotNet.LICENSE" />
+    <EmbeddedResource Include="../../.deps/DotNet-NOTICES.txt" LogicalName="Dependencies.DotNet.NOTICES" />
+    <EmbeddedResource Include="../../.deps/WindowsDesktop-LICENSE.txt" LogicalName="Dependencies.WindowsDesktop.LICENSE" />
+  </ItemGroup>
+</Project>

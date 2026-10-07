@@ -1,0 +1,33 @@
+DownloadLimit uses the following third-party components.
+
+WinDivert 2.2.2, official A binary distribution (unmodified x64 DLL/driver)
+Copyright (c) 2019, all rights reserved.
+Author: basil (upstream project)
+Upstream: https://reqrypt.org/windivert.html
+Source: https://reqrypt.org/download/WinDivert-2.2.2-Source.zip
+Repository: https://github.com/basil00/WinDivert
+
+WinDivert is dual licensed under LGPLv3 (or later) or GPLv2 (or later).
+This distribution chooses the LGPLv3 option. The upstream LICENSE file includes
+LGPLv3, GPLv3 and GPLv2; its full text and corresponding source archive are
+embedded in the EXE and extracted to the installed Licenses folder. The same
+files accompany the release ZIP. No changes are made to WinDivert source,
+DLL, or driver. A valid Windows driver signature is still required.
+
+The app dynamically loads WinDivert.dll from its versioned installation folder.
+You may replace that DLL with an interface-compatible modified version and,
+where necessary, supply its corresponding correctly signed Windows driver.
+Existing native files are not overwritten on ordinary app launches. Modification
+and reverse engineering for debugging modifications to the LGPL library are
+not prohibited. Rebuild instructions and the application's MIT-licensed source
+are provided. No commercial WinDivert subscription/license is part of this app.
+
+.NET Runtime and Windows Forms
+Copyright (c) .NET Foundation and Contributors.
+https://github.com/dotnet/runtime
+https://github.com/dotnet/winforms
+License: MIT. Runtime-pack license and third-party notices are included in the
+release Licenses folder and embedded/extracted with the executable.
+
+This app has no other NuGet or managed third-party application dependencies.
+The test harnesses use only the .NET SDK and the bundled native WinDivert helper.
