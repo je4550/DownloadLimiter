@@ -68,6 +68,7 @@ internal static partial class Program
         public bool ReceiveStarted => Volatile.Read(ref _receiveStarted) != 0;
         public bool Disposed => Volatile.Read(ref _disposed) != 0;
         public void ResumeReceiving() => _receiveRelease.Set();
+        public void ResumeSending() => _sendRelease.Set();
         public SentPacket[] Snapshot() => _sent.ToArray();
         public long SentBytes(bool outbound) => Snapshot().Where(p => p.Outbound == outbound).Sum(p => (long)p.Length);
         public void Enqueue(byte[] bytes, bool outbound, uint index = 1) => _incoming.Add((bytes,

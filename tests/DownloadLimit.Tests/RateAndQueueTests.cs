@@ -154,16 +154,21 @@ internal static partial class Program
         var transport = new FakeTransport(clock);
         var settings = new AppSettings(1, 1, false);
         await using var engine = new ShapingEngine(transport, clock, new(), settings);
+        // Oversized-packet debt keeps the queue credit-blocked throughout both
+        // deadlines, so this checks expiry rather than a scheduling race.
+        clock.Advance(0.012);
+        transport.Enqueue(Udp4(40_000), false);
+        await Until(() => transport.ReadCount == 1);
         transport.Enqueue(Udp4(1200), false);
         transport.Enqueue(Udp4(1200), false);
         transport.Enqueue(Udp4(512), false);
         transport.Enqueue(Udp4(512), false);
-        await Until(() => transport.ReadCount == 4);
-        clock.Advance(0.006);
+        await Until(() => transport.ReadCount == 5);
+        clock.Advance(0.101);
         engine.UpdateLimits(settings);
         await Until(() => engine.Statistics.DroppedPackets == 2);
-        Check(engine.Statistics.SentDownloadBytes == 0, "Expired priority packets leaked through the cap.");
-        clock.Advance(0.030);
+        Check(engine.Statistics.SentDownloadBytes == 40_000, "Expired priority packets leaked through the cap.");
+        clock.Advance(0.150);
         engine.UpdateLimits(settings);
         await Until(() => engine.Statistics.DroppedPackets == 4);
         Check(engine.Statistics.QueuedPackets == 0, "Expired bulk packets were retained.");
@@ -190,23 +195,71 @@ internal static partial class Program
 
     private static async Task CaptureAge()
     {
+        foreach (double pause in new[] { 0.006, 0.030, 0.080 })
+        {
+            var clock = new FakeClock();
+            var transport = new FakeTransport(clock) { BlockReceiving = true };
+            await using var engine = new ShapingEngine(transport, clock, new(), new(500, 500, false));
+            foreach (bool outbound in new[] { false, true })
+            {
+                transport.Enqueue(Udp4(1200), outbound);
+                transport.Enqueue(Udp4(100), outbound);
+            }
+            await Until(() => transport.ReceiveStarted);
+            clock.Advance(pause);
+            transport.ResumeReceiving();
+            await Until(() => transport.ReadCount == 4);
+            Check(engine.Statistics.DroppedPackets == 0 && transport.Snapshot().Length == 4,
+                "A brief scheduling pause discarded sendable bulk or priority traffic.");
+            Check(engine.Statistics.SentUploadBytes == 1300 && engine.Statistics.SentDownloadBytes == 1300 &&
+                engine.Statistics.AllocatedBufferBytes == 0,
+                "Delayed capture changed accounting or allocated unnecessary storage.");
+        }
+    }
+
+    private static async Task SchedulingPauseCap()
+    {
         var clock = new FakeClock();
         var transport = new FakeTransport(clock) { BlockReceiving = true };
-        var settings = new AppSettings(500, 500, false);
-        await using var engine = new ShapingEngine(transport, clock, new(), settings);
-        transport.Enqueue(Udp4(1200), false);
+        await using var engine = new ShapingEngine(transport, clock, new(), new(1, 1, false));
+        foreach (bool outbound in new[] { false, true })
+        {
+            transport.Enqueue(Udp4(1200), outbound);
+            transport.Enqueue(Udp4(100), outbound);
+            transport.Enqueue(Udp4(1200), outbound);
+        }
         await Until(() => transport.ReceiveStarted);
-        clock.Advance(0.025);
+        clock.Advance(0.080);
         transport.ResumeReceiving();
+        await Until(() => transport.ReadCount == 6);
+        Check(engine.Statistics.SentDownloadBytes == 1300 && engine.Statistics.SentUploadBytes == 1300 &&
+            engine.Statistics.QueuedPackets == 2 && engine.Statistics.DroppedPackets == 0,
+            "Capture recovery accumulated excess burst credit or bypassed a directional cap.");
+    }
+
+    private static async Task QueuedSchedulingPause()
+    {
+        var clock = new FakeClock();
+        var transport = new FakeTransport(clock);
+        var settings = new AppSettings(1, 1, false);
+        await using var engine = new ShapingEngine(transport, clock, new(), settings);
+        clock.Advance(0.012);
+        transport.Enqueue(Udp4(40_000), false);
         await Until(() => transport.ReadCount == 1);
-        Check(engine.Statistics.DroppedPackets == 1 && engine.Statistics.QueuedPackets == 0,
-            "A stale native capture received a new queue residence deadline.");
-        Check(engine.Statistics.AllocatedBufferBytes == 0 && transport.Snapshot().Length == 0,
-            "An expired native capture consumed storage or was reinjected.");
-        transport.Enqueue(Udp4(100), true);
-        await Until(() => transport.ReadCount == 2 && transport.Snapshot().Length == 1);
-        Check(engine.Statistics.SentUploadBytes == 100,
-            "A stale packet prevented subsequent fresh traffic from progressing.");
+        transport.Enqueue(Udp4(1200), false);
+        transport.Enqueue(Udp4(100), false);
+        await Until(() => transport.ReadCount == 3);
+        transport.Enqueue(Udp4(1200), true);
+        await Until(() => transport.ReadCount == 4);
+        transport.Enqueue(Udp4(1200), true);
+        await Until(() => transport.ReadCount == 5 && engine.Statistics.QueuedPackets == 3);
+        clock.Advance(0.030);
+        engine.UpdateLimits(settings);
+        // This marker can only be sent by the queue worker after the pause.
+        await Until(() => engine.Statistics.SentUploadBytes == 2400);
+        Check(engine.Statistics.DroppedPackets == 0 && engine.Statistics.QueuedPackets == 2 &&
+            engine.Statistics.SentDownloadBytes == 40_000,
+            "A scheduling pause expired queued traffic or cleared oversized-packet debt.");
     }
 
     private static async Task ExemptPackets()

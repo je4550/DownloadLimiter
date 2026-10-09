@@ -26,6 +26,7 @@ internal static class Program
         }
         try
         {
+            PacketScheduling.ConfigureProcess();
             bool firstInstall = AppFiles.Install();
             WinDivertTransport.ConfigureLibrary(AppFiles.NativeDirectory);
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);

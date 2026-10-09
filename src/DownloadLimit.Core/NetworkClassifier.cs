@@ -39,12 +39,15 @@ public sealed class NetworkClassifier
         Prefix("fe80::", 10), Prefix("ff00::", 8)
     ];
     public IReadOnlyList<NetworkPrefix> Exclusions { get; }
+    private readonly NetworkPrefix[] _ipv4Exclusions, _ipv6Exclusions;
 
     public NetworkClassifier(IEnumerable<NetworkPrefix>? connectedPrefixes = null)
     {
         Exclusions = Reserved.Concat((connectedPrefixes ?? []).Where(p =>
             !(p.First == 0 && p.Last == (p.AddressLength == 4 ? uint.MaxValue : UInt128.MaxValue))))
             .Distinct().ToArray();
+        _ipv4Exclusions = Exclusions.Where(p => p.AddressLength == 4).ToArray();
+        _ipv6Exclusions = Exclusions.Where(p => p.AddressLength == 16).ToArray();
     }
 
     private static NetworkPrefix Prefix(string address, int bits) =>
@@ -57,8 +60,9 @@ public sealed class NetworkClassifier
         if (remote.Length == 16 && remote[..10].IndexOfAnyExcept((byte)0) < 0 &&
             remote[10] == 255 && remote[11] == 255) remote = remote[12..];
         UInt128 value = NetworkPrefix.Read(remote);
-        foreach (NetworkPrefix prefix in Exclusions)
-            if (prefix.AddressLength == remote.Length && value >= prefix.First && value <= prefix.Last)
+        // Enumerate concrete arrays: the IReadOnlyList enumerator allocates per packet.
+        foreach (NetworkPrefix prefix in remote.Length == 4 ? _ipv4Exclusions : _ipv6Exclusions)
+            if (value >= prefix.First && value <= prefix.Last)
                 return false;
         return true;
     }

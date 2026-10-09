@@ -16,7 +16,7 @@ Right-click the tray icon:
 - **Start with Windows** — checked by default; registers an elevated task for the current administrator account's sign-in.
 - **Exit** — release packet capture and close the app.
 
-Every launch starts with **shaping disabled**. Limits and startup choice persist. The tooltip shows current download/upload speeds, configured caps, and status or bypass countdown.
+Every launch restores your **last Enable/Disable choice**, including at Windows sign-in. Fresh installs start disabled. Limits and startup choice persist; timed bypass is temporary. The tooltip shows current download/upload speeds, configured caps, and status or bypass countdown.
 
 ## Build and test
 
@@ -40,7 +40,7 @@ dotnet run --project tests/DownloadLimit.LiveSmoke -c Release -- --live
 
 Native checks load WinDivert's compiler/evaluator without driver handles, traffic, or task registration. The test script may download missing build dependencies. `test-offline.ps1` remains available for synthetic core tests alone.
 
-The **25 core tests and 37 Windows/filter/privacy checks pass**. An earlier short Windows 11 live comparison confirmed shaping and bypass affect both directions; the subsequent review fixes have been checked without live traffic. Windows 10, gaming latency, VPNs, sleep/resume, and live shutdown still need manual validation. See the [Windows checklist](docs/WINDOWS-VALIDATION.md).
+The **38 core tests and 55 Windows/filter/monitor/checksum/privacy checks pass**. An earlier short Windows 11 live comparison confirmed shaping and bypass affect both directions; the subsequent review, packet-path optimizations, saved Enable/Disable choice, and CPU-load recovery changes have been checked without live traffic. CPU-saturation connectivity, Windows 10, gaming latency, VPNs, sleep/resume, and live shutdown still need manual validation. See the [Windows checklist](docs/WINDOWS-VALIDATION.md).
 
 ## Limits and gaming
 
@@ -48,7 +48,7 @@ Small UDP packets receive priority **inside the same cap**. Pure TCP ACK/control
 
 **Inbound packets have already crossed the internet connection.** Download shaping can pace delivery and encourage TCP to adapt, but cannot guarantee a strict inbound cap at the router. VPN compatibility is best effort and requires testing with your VPN.
 
-An aggregate token bucket, bounded queues, and short packet deadlines limit buffering. Overload can drop packets and cause retransmissions. Disable, bypass, Exit, and fatal errors release capture so future traffic resumes normally. See [design, settings, removal, and troubleshooting](docs/DESIGN.md) for exact bounds and caveats.
+An aggregate token bucket and bounded queues limit buffering. Packet workers receive a modest scheduling boost, brief CPU delays have more tolerance, and severe capture delay stops shaping so future traffic can recover. Overload can still drop packets and cause retransmissions. Disable, bypass, Exit, and fatal errors release capture. See [design, settings, removal, and troubleshooting](docs/DESIGN.md) for exact bounds and caveats.
 
 ## License
 
