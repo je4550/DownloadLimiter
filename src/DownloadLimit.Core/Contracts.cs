@@ -35,6 +35,8 @@ public interface IPacketTransport : IDisposable
     // Blocks until receive shutdown; calls receiver synchronously with borrowed memory.
     void ReceiveLoop(PacketReceiver receiver);
     void Send(ReadOnlySpan<byte> packet, PacketAddress address);
+    // Reuse parsing performed during capture. Transports that do not need it can ignore it.
+    void Send(ReadOnlySpan<byte> packet, PacketAddress address, PacketInfo info) => Send(packet, address);
     // Stops new diversion but leaves send available for draining retained packets.
     void StopReceiving();
 }
@@ -43,7 +45,7 @@ public readonly record struct EngineStatistics(long QueuedBytes, int QueuedPacke
     long AllocatedBufferBytes, long DroppedPackets, long SentDownloadBytes, long SentUploadBytes);
 
 public sealed record AppSettings(decimal DownloadMbps = 500m, decimal UploadMbps = 500m,
-    bool StartWithWindows = true)
+    bool StartWithWindows = true, bool ShapingEnabled = false)
 {
     public static bool IsValidLimit(decimal limit) => limit >= 1m && limit <= 10_000m &&
         decimal.Round(limit, 3) == limit;

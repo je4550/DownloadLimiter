@@ -4,14 +4,18 @@ public sealed class ShapingEngine : IAsyncDisposable
 {
     public const long MaximumBufferBytes = 8 * 1024 * 1024;
     public const int MaximumQueuedPackets = 2048;
-    public const double BulkDeadlineSeconds = 0.020;
-    public const double PriorityDeadlineSeconds = 0.005;
+    // Safety limits, not latency targets: a normal scheduling pause must not
+    // turn an otherwise sendable packet into loss.
+    public const double BulkDeadlineSeconds = 0.250;
+    public const double PriorityDeadlineSeconds = 0.100;
+    public const double MaximumCaptureDelaySeconds = 0.100;
     private readonly object _gate = new();
     private readonly object _stopGate = new();
     private readonly IPacketTransport _transport;
     private readonly IMonotonicClock _clock;
     private readonly NetworkClassifier _classifier;
     private readonly BoundedBufferPool _pool;
+    private readonly Action? _configureWorker;
     private readonly AutoResetEvent _wake = new(false);
     private readonly Direction[] _directions;
     private readonly Task _receiver, _sender;
@@ -20,8 +24,10 @@ public sealed class ShapingEngine : IAsyncDisposable
     private int _faulted, _queuedPackets, _nextDirection;
     private long _queuedBytes, _dropped, _downloadSent, _uploadSent;
 
-    private sealed record Packet(byte[] Buffer, int Length, PacketAddress Address,
-        long CapturedAt, bool Priority);
+    private sealed record Packet(byte[] Buffer, PacketInfo Info, PacketAddress Address, long CapturedAt)
+    {
+        public int Length => Info.Length;
+    }
 
     private sealed class Direction(IMonotonicClock clock, double rate)
     {
@@ -29,6 +35,7 @@ public sealed class ShapingEngine : IAsyncDisposable
         public readonly Queue<Packet> Priority = new();
         public readonly TokenBucket Bucket = new(clock, rate);
         public readonly TokenBucket PriorityBudget = new(clock, rate * 0.2, 512);
+        public bool Sending;
     }
 
     public event Action<Exception>? Faulted;
@@ -36,13 +43,14 @@ public sealed class ShapingEngine : IAsyncDisposable
 
     public ShapingEngine(IPacketTransport transport, IMonotonicClock clock,
         NetworkClassifier classifier, AppSettings settings, BoundedBufferPool? pool = null,
-        Action<Exception>? onFault = null)
+        Action<Exception>? onFault = null, Action? configureWorker = null)
     {
         if (!settings.IsValid) throw new ArgumentOutOfRangeException(nameof(settings));
         _transport = transport;
         _clock = clock;
         _classifier = classifier;
         _pool = pool ?? new BoundedBufferPool(MaximumBufferBytes);
+        _configureWorker = configureWorker;
         _directions = [new(clock, Rate(settings.DownloadMbps)), new(clock, Rate(settings.UploadMbps))];
         Faulted = onFault;
         var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,6 +90,7 @@ public sealed class ShapingEngine : IAsyncDisposable
     {
         try
         {
+            _configureWorker?.Invoke();
             _transport.ReceiveLoop(ReceivePacket);
             if (!_stopping) Fail(new IOException("Packet capture ended unexpectedly; shaping was stopped."));
         }
@@ -91,16 +100,21 @@ public sealed class ShapingEngine : IAsyncDisposable
 
     private void ReceivePacket(ReadOnlySpan<byte> bytes, PacketAddress address)
     {
-        PacketInfo info = PacketParser.Parse(bytes, address.Outbound);
-        bool exempt = address.Loopback || address.Impostor ||
-            info.Class is PacketClass.Bypass or PacketClass.Invalid ||
-            !_classifier.IsInternet(bytes.Slice(info.AddressOffset, info.AddressLength));
-        if (_stopping || exempt)
+        if (_stopping || address.Loopback || address.Impostor)
         {
             _transport.Send(bytes, address);
             return;
         }
+        PacketInfo info = PacketParser.Parse(bytes, address.Outbound);
+        bool exempt = info.Class is PacketClass.Bypass or PacketClass.Invalid ||
+            !_classifier.IsInternet(bytes.Slice(info.AddressOffset, info.AddressLength));
+        if (_stopping || exempt)
+        {
+            _transport.Send(bytes, address, info);
+            return;
+        }
         bool priority = info.Class == PacketClass.Priority;
+        Direction direction = _directions[address.Outbound ? 1 : 0];
         lock (_gate)
         {
             // A stop that races capture must also release the borrowed packet.
@@ -109,13 +123,21 @@ public sealed class ShapingEngine : IAsyncDisposable
                 // Do not hold the queue lock across a possibly stalled native send.
                 goto PassThrough;
             }
-            long capturedAt = address.Timestamp > 0 && address.Timestamp <= _clock.Timestamp ?
-                address.Timestamp : _clock.Timestamp;
-            double age = (_clock.Timestamp - capturedAt) / (double)_clock.Frequency;
-            if (age >= (priority ? PriorityDeadlineSeconds : BulkDeadlineSeconds))
+            long now = _clock.Timestamp;
+            long capturedAt = address.Timestamp > 0 && address.Timestamp <= now ? address.Timestamp : now;
+            double age = (now - capturedAt) / (double)_clock.Frequency;
+            // Driver delay is independent of the configured cap. Stop diversion
+            // if capture cannot keep up instead of silently dropping every batch.
+            if (age >= MaximumCaptureDelaySeconds)
+                throw new TimeoutException("Packet capture fell behind, possibly because of CPU load. " +
+                    "Shaping was stopped to restore networking. Choose Enable to retry.");
+            // Use borrowed receive memory when there is no backlog and the cap allows it.
+            // Reserve this direction so a queued send cannot be overtaken while in flight.
+            if (!direction.Sending && direction.Priority.Count == 0 && direction.Bulk.Count == 0 &&
+                direction.Bucket.TryConsume(bytes.Length))
             {
-                Interlocked.Increment(ref _dropped);
-                return;
+                direction.Sending = true;
+                goto DirectSend;
             }
             // Reserve space for interactive traffic by evicting a queued bulk packet.
             if (_queuedPackets >= MaximumQueuedPackets && (!priority || !EvictBulk()))
@@ -131,17 +153,19 @@ public sealed class ShapingEngine : IAsyncDisposable
                 return;
             }
             bytes.CopyTo(buffer);
-            Direction direction = _directions[address.Outbound ? 1 : 0];
             Queue<Packet> queue = priority ? direction.Priority : direction.Bulk;
             bool wasEmpty = queue.Count == 0;
-            queue.Enqueue(new(buffer, bytes.Length, address, capturedAt, priority));
+            queue.Enqueue(new(buffer, info, address, capturedAt));
             _queuedPackets++;
             _queuedBytes += buffer.Length;
             if (wasEmpty) Signal();
             return;
         }
         PassThrough:
-        _transport.Send(bytes, address);
+        _transport.Send(bytes, address, info);
+        return;
+        DirectSend:
+        SendShaped(bytes, address, info, direction, wakeSender: true);
     }
 
     private bool EvictBulk()
@@ -178,7 +202,8 @@ public sealed class ShapingEngine : IAsyncDisposable
 
     private Packet? Take(Direction direction, out double wait)
     {
-        wait = 0.010;
+        wait = double.PositiveInfinity;
+        if (direction.Sending) return null;
         if (_stopping)
         {
             if (direction.Priority.Count > 0) return Dequeue(direction.Priority);
@@ -193,8 +218,7 @@ public sealed class ShapingEngine : IAsyncDisposable
             direction.PriorityBudget.SecondsUntilAvailable(priority!.Length) : 0;
         bool choosePriority = hasPriority && (!hasBulk || priorityWait <= 1e-9);
         Packet candidate = choosePriority ? priority! : bulk!;
-        wait = direction.Bucket.SecondsUntilAvailable(candidate.Length);
-        if (!direction.Bucket.TryConsume(candidate.Length))
+        if (!direction.Bucket.TryConsume(candidate.Length, out wait))
         {
             if (hasPriority && hasBulk && !choosePriority)
                 wait = Math.Min(wait, Math.Max(priorityWait,
@@ -205,14 +229,35 @@ public sealed class ShapingEngine : IAsyncDisposable
         return Dequeue(choosePriority ? direction.Priority : direction.Bulk);
     }
 
+    private void SendShaped(ReadOnlySpan<byte> bytes, PacketAddress address, PacketInfo info,
+        Direction direction, bool wakeSender = false)
+    {
+        try
+        {
+            _transport.Send(bytes, address, info);
+            if (address.Outbound) Interlocked.Add(ref _uploadSent, bytes.Length);
+            else Interlocked.Add(ref _downloadSent, bytes.Length);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                direction.Sending = false;
+                if (wakeSender && _queuedPackets > 0) Signal();
+            }
+        }
+    }
+
     private void SendWorker()
     {
         try
         {
+            _configureWorker?.Invoke();
             while (true)
             {
                 Packet? packet = null;
-                double delay = 0.010;
+                Direction? sending = null;
+                double delay = double.PositiveInfinity;
                 lock (_gate)
                 {
                     for (int attempt = 0; attempt < 2; attempt++)
@@ -222,6 +267,8 @@ public sealed class ShapingEngine : IAsyncDisposable
                         delay = Math.Min(delay, wait);
                         if (packet is not null)
                         {
+                            sending = _directions[index];
+                            sending.Sending = true;
                             _nextDirection = 1 - index;
                             break;
                         }
@@ -232,13 +279,12 @@ public sealed class ShapingEngine : IAsyncDisposable
                 {
                     try
                     {
-                        _transport.Send(packet.Buffer.AsSpan(0, packet.Length), packet.Address);
-                        if (packet.Address.Outbound) Interlocked.Add(ref _uploadSent, packet.Length);
-                        else Interlocked.Add(ref _downloadSent, packet.Length);
+                        SendShaped(packet.Buffer.AsSpan(0, packet.Length), packet.Address, packet.Info, sending!);
                     }
                     finally { Release(packet); }
                 }
-                else _wake.WaitOne(Math.Clamp((int)Math.Ceiling(delay * 1000), 1, 10));
+                else if (double.IsPositiveInfinity(delay)) _wake.WaitOne();
+                else _wake.WaitOne((int)Math.Clamp(Math.Ceiling(delay * 1000), 1, 10));
             }
         }
         catch (Exception ex) { if (!_stopping) Fail(ex); }

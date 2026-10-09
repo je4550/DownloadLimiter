@@ -48,9 +48,12 @@ public sealed class TokenBucket
         return Math.Max(0, Math.Min(bytes, Capacity) - _tokens) / BytesPerSecond;
     }
 
-    public bool TryConsume(int bytes)
+    public bool TryConsume(int bytes) => TryConsume(bytes, out _);
+
+    public bool TryConsume(int bytes, out double wait)
     {
-        if (SecondsUntilAvailable(bytes) > 1e-9) return false;
+        wait = SecondsUntilAvailable(bytes);
+        if (wait > 1e-9) return false;
         _tokens -= bytes;
         return true;
     }

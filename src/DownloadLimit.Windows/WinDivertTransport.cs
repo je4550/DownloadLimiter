@@ -141,7 +141,15 @@ public sealed unsafe class WinDivertTransport : IPacketTransport
         finally { EndOperation(); }
     }
 
-    public void Send(ReadOnlySpan<byte> bytes, PacketAddress address)
+    public void Send(ReadOnlySpan<byte> bytes, PacketAddress address) =>
+        Send(bytes, address, PacketParser.Parse(bytes, address.Outbound));
+
+    internal static bool NeedsChecksum(PacketInfo info, PacketAddress address) =>
+        (info.AddressLength == 4 && (address.Flags & (1u << 21)) == 0) ||
+        (!info.Fragment && info.Protocol == 6 && (address.Flags & (1u << 22)) == 0) ||
+        (!info.Fragment && info.Protocol == 17 && (address.Flags & (1u << 23)) == 0);
+
+    public void Send(ReadOnlySpan<byte> bytes, PacketAddress address, PacketInfo info)
     {
         BeginOperation();
         try
@@ -160,11 +168,7 @@ public sealed unsafe class WinDivertTransport : IPacketTransport
                     ObjectDisposedException.ThrowIf(_closed, this);
                     handle = _handle;
                     // Recalculate only when offload metadata reports missing checksums.
-                    PacketInfo info = PacketParser.Parse(bytes, address.Outbound);
-                    bool needsChecksum = (info.AddressLength == 4 && (address.Flags & (1u << 21)) == 0) ||
-                        (!info.Fragment && info.Protocol == 6 && (address.Flags & (1u << 22)) == 0) ||
-                        (!info.Fragment && info.Protocol == 17 && (address.Flags & (1u << 23)) == 0);
-                    if (needsChecksum && !Native.CalcChecksums(packet, (uint)bytes.Length, &address, 0))
+                    if (NeedsChecksum(info, address) && !Native.CalcChecksums(packet, (uint)bytes.Length, &address, 0))
                         throw new InvalidDataException("Could not repair offloaded packet checksums.");
                     success = Native.SendEx(handle, packet, (uint)bytes.Length,
                         &sent, 0, &address, (uint)sizeof(PacketAddress), &operation);

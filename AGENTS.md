@@ -15,7 +15,7 @@ Build a minimal, reliable Windows tray shaper. Keep the interface to limits, ena
 ## Working rules
 
 - Preserve separate aggregate upload/download budgets, bounded packet storage, full IP-byte accounting, and small burst allowance. Game-priority packets share the cap; control and local traffic remain exempt.
-- Every app launch starts disabled. Disable, bypass, Exit, and failure must release diversion promptly. Preserve bounded shutdown and cancellation of pending native I/O.
+- Restore the last explicit Enable/Disable choice on launch; fresh or legacy settings default to disabled. Bypass is temporary, and Exit/failure must not overwrite that choice. Disable, bypass, Exit, and failure must release diversion promptly. Preserve bounded shutdown and cancellation of pending native I/O.
 - Keep IPv4/IPv6 parsing and WinDivert ABI/layout checks intact. Use signed upstream binaries; pin and verify dependency archives. Include matching licenses/source in releases.
 - Build with `powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1`. It compiles but does not run tests or install anything.
 - Run relevant network-free checks with `scripts/test.ps1`; `test-offline.ps1` runs core checks alone. Never enable shaping, launch the app, register tasks, or generate live traffic without user authorization. Live smoke requires `--live`.

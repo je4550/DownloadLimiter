@@ -56,10 +56,22 @@ try
     if (document.Declaration?.Encoding != "utf-16" ||
         document.Descendants(ns + "Command").Single().Value != executable ||
         document.Descendants(ns + "RunLevel").Single().Value != "HighestAvailable" ||
-        document.Descendants(ns + "LogonType").Single().Value != "InteractiveToken")
+        document.Descendants(ns + "LogonType").Single().Value != "InteractiveToken" ||
+        document.Descendants(ns + "Priority").Single().Value != "4" || !StartupTask.HasNormalPriority(document))
         throw new Exception("Task XML encoding, escaped path or interactive elevation is incorrect.");
     passed++;
-    Console.WriteLine("PASS startup XML Unicode encoding and escaped executable path");
+    Console.WriteLine("PASS startup XML Unicode encoding, escaped executable path and normal priority");
+    foreach (string? legacyPriority in new string?[] { null, "7", "8" })
+    {
+        var legacy = new XDocument(document);
+        legacy.Descendants(ns + "Priority").Single().Remove();
+        if (legacyPriority is not null)
+            legacy.Root!.Element(ns + "Settings")!.Add(new XElement(ns + "Priority", legacyPriority));
+        if (StartupTask.HasNormalPriority(legacy))
+            throw new Exception("Legacy background startup priority was not marked for migration.");
+        passed++;
+    }
+    Console.WriteLine("PASS legacy startup priority migration detection (3 cases)");
 }
 finally { File.Delete(xmlPath); }
 foreach (string executable in new[] { "", @"relative\DownloadLimit.exe" })
@@ -75,6 +87,8 @@ Console.WriteLine("PASS startup definition rejects empty and relative executable
 
 await CheckMonitorAsync();
 passed += 4;
+CheckChecksumMetadata();
+passed += 15;
 CheckDebugPrivacy(args.Length == 2 ? new[] { args[1] } : Array.Empty<string>());
 passed += 3 + args.Length / 2;
 var reserved = new NetworkClassifier();
@@ -96,7 +110,35 @@ foreach (bool ipv6 in new[] { false, true })
             passed++;
         }
 Console.WriteLine("PASS native IPv4/IPv6 filter evaluation: upload/download, public data, LAN, TCP ACKs, ICMP controls (20 cases)");
-Console.WriteLine($"{passed}/{37 + args.Length / 2} startup/filter/monitor/privacy regression checks passed. No driver handles or network traffic used.");
+Console.WriteLine($"{passed}/{55 + args.Length / 2} startup/filter/monitor/checksum/privacy regression checks passed. No driver handles or network traffic used.");
+
+static void CheckChecksumMetadata()
+{
+    const uint ipValid = 1u << 21;
+    foreach (bool ipv6 in new[] { false, true })
+        foreach (byte protocol in new byte[] { 6, 17 })
+        {
+            byte[] packet = MakePacket(ipv6, false, ipv6 ? "2001:4860:4860::8888" : "8.8.8.8", protocol, 64);
+            PacketInfo info = PacketParser.Parse(packet, false);
+            uint transportValid = protocol == 6 ? 1u << 22 : 1u << 23;
+            if (WinDivertTransport.NeedsChecksum(info, new() { Flags = ipValid | transportValid }))
+                throw new Exception("Valid protocol checksums must not be recalculated when an unrelated flag is missing.");
+            if (!WinDivertTransport.NeedsChecksum(info, new() { Flags = ipValid }))
+                throw new Exception("Missing transport checksums must still be repaired with reused packet metadata.");
+            if (WinDivertTransport.NeedsChecksum(info, new() { Flags = transportValid }) != !ipv6)
+                throw new Exception("Only IPv4 has an IP header checksum to repair.");
+        }
+    byte[] fragment = MakePacket(false, false, "8.8.8.8", 17, 64);
+    BinaryPrimitives.WriteUInt16BigEndian(fragment.AsSpan(6), 0x2000);
+    PacketInfo fragmentInfo = PacketParser.Parse(fragment, false);
+    if (WinDivertTransport.NeedsChecksum(fragmentInfo, new() { Flags = ipValid }))
+        throw new Exception("Fragment transport checksums must not be repaired independently.");
+    if (!WinDivertTransport.NeedsChecksum(fragmentInfo, new()))
+        throw new Exception("IPv4 fragments still require a valid IP header checksum.");
+    if (WinDivertTransport.NeedsChecksum(new(64, 8, 16, 17, true, PacketClass.Bulk), new()))
+        throw new Exception("IPv6 fragments have no independently repairable checksum.");
+    Console.WriteLine("PASS reused IPv4/IPv6 checksum metadata, relevant offload flags and fragments (15 cases)");
+}
 
 static void CheckDebugPrivacy(IEnumerable<string> extraAssemblies)
 {

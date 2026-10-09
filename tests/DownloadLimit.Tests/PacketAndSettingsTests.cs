@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using DownloadLimit.Core;
 
 // No Windows assembly reference, P/Invoke, sockets, HTTP, or WinDivert loading.
@@ -59,11 +60,31 @@ internal static partial class Program
 
     private static void SettingsAndAbi()
     {
-        Check(new AppSettings().IsValid && new AppSettings().StartWithWindows, "Defaults do not match the UI contract.");
+        Check(new AppSettings().IsValid && new AppSettings().StartWithWindows && !new AppSettings().ShapingEnabled,
+            "Fresh installs must retain valid defaults with shaping disabled.");
         Check(AppSettings.IsValidLimit(1) && AppSettings.IsValidLimit(10_000) && AppSettings.IsValidLimit(500.001m), "Valid limits were rejected.");
         Check(!AppSettings.IsValidLimit(0) && !AppSettings.IsValidLimit(10_001) && !AppSettings.IsValidLimit(500.0005m), "Invalid limits were accepted.");
         Check(Marshal.SizeOf<PacketAddress>() == 80 && Marshal.OffsetOf<PacketAddress>(nameof(PacketAddress.InterfaceIndex)).ToInt32() == 16, "WinDivert address ABI is incorrect.");
         Check(new PacketAddress { Flags = 1u << 17 }.Outbound, "Outbound flag bit is incorrect.");
+    }
+
+    private static void SavedShapingChoice()
+    {
+        // Fictitious settings only; never read or modify the signed-in user's settings.
+        const string legacyJson = "{\"DownloadMbps\":12.5,\"UploadMbps\":4.25,\"StartWithWindows\":true}";
+        AppSettings legacy = JsonSerializer.Deserialize<AppSettings>(legacyJson) ?? throw new Exception("Legacy settings were lost.");
+        Check(!legacy.ShapingEnabled && legacy.DownloadMbps == 12.5m && legacy.UploadMbps == 4.25m && legacy.StartWithWindows,
+            "Upgrading settings without an enable preference must preserve limits and start disabled.");
+        foreach (bool enabled in new[] { true, false, true })
+        {
+            AppSettings selected = legacy with { ShapingEnabled = enabled };
+            AppSettings saved = selected with { DownloadMbps = 20m, StartWithWindows = false };
+            AppSettings restored = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(saved)) ??
+                throw new Exception("Saved settings were lost.");
+            Check(restored.ShapingEnabled == enabled && restored.DownloadMbps == 20m &&
+                restored.UploadMbps == legacy.UploadMbps && !restored.StartWithWindows,
+                "Saving limits/startup or relaunching discarded the last explicit enable choice.");
+        }
     }
 
 }

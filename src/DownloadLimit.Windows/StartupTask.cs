@@ -21,6 +21,20 @@ public static class StartupTask
     private static string Name => $"DownloadLimit-{UserSid}";
     public static bool Exists() => Run(["/Query", "/TN", Name], throwOnError: false) == 0;
 
+    public static bool HasNormalPriority()
+    {
+        bool normal = false;
+        Run(["/Query", "/TN", Name, "/XML"], captureOutput: xml =>
+            normal = HasNormalPriority(XDocument.Parse(xml)));
+        return normal;
+    }
+
+    internal static bool HasNormalPriority(XDocument definition)
+    {
+        XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        return definition.Root?.Element(ns + "Settings")?.Element(ns + "Priority")?.Value == "4";
+    }
+
     public static void SetEnabled(bool enabled, string executable)
     {
         if (!enabled)
@@ -45,7 +59,7 @@ public static class StartupTask
             throw new ArgumentException("The startup executable must use an absolute path.", nameof(executable));
         XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
         var document = new XDocument(new XElement(ns + "Task", new XAttribute("version", "1.2"),
-            new XElement(ns + "RegistrationInfo", new XElement(ns + "Description", "DownloadLimit tray app; starts with shaping disabled.")),
+            new XElement(ns + "RegistrationInfo", new XElement(ns + "Description", "DownloadLimit tray app; restores the last Enable/Disable choice.")),
             new XElement(ns + "Triggers", new XElement(ns + "LogonTrigger",
                 new XElement(ns + "Enabled", "true"), new XElement(ns + "UserId", userSid))),
             new XElement(ns + "Principals", new XElement(ns + "Principal", new XAttribute("id", "User"),
@@ -57,6 +71,8 @@ public static class StartupTask
                 new XElement(ns + "StopIfGoingOnBatteries", "false"),
                 new XElement(ns + "StartWhenAvailable", "true"),
                 new XElement(ns + "Enabled", "true"),
+                // Task Scheduler otherwise defaults to Below Normal (priority 7).
+                new XElement(ns + "Priority", "4"),
                 new XElement(ns + "ExecutionTimeLimit", "PT0S")),
             new XElement(ns + "Actions", new XAttribute("Context", "User"),
                 new XElement(ns + "Exec", new XElement(ns + "Command", executable),
@@ -67,7 +83,7 @@ public static class StartupTask
         document.Save(writer);
     }
 
-    private static int Run(string[] arguments, bool throwOnError = true)
+    private static int Run(string[] arguments, bool throwOnError = true, Action<string>? captureOutput = null)
     {
         var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "schtasks.exe"))
         {
@@ -85,6 +101,7 @@ public static class StartupTask
         }
         if (throwOnError && process.ExitCode != 0)
             throw new IOException($"Task Scheduler rejected the change: {error.GetAwaiter().GetResult()} {output.GetAwaiter().GetResult()}");
+        if (process.ExitCode == 0 && captureOutput is not null) captureOutput(output.GetAwaiter().GetResult());
         return process.ExitCode;
     }
 }

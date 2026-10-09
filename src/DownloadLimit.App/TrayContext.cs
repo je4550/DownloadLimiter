@@ -68,7 +68,8 @@ internal sealed class TrayContext : ApplicationContext
                 try
                 {
                     bool exists = StartupTask.Exists();
-                    if (_settings.StartWithWindows && !exists) StartupTask.SetEnabled(true, AppFiles.InstalledExecutable);
+                    if (_settings.StartWithWindows && (!exists || !StartupTask.HasNormalPriority()))
+                        StartupTask.SetEnabled(true, AppFiles.InstalledExecutable);
                     else if (!_settings.StartWithWindows && exists) StartupTask.SetEnabled(false, AppFiles.InstalledExecutable);
                     return (StartupTask.Exists(), (string?)null);
                 }
@@ -82,10 +83,13 @@ internal sealed class TrayContext : ApplicationContext
             });
             _settings = _settings with { StartWithWindows = startup.Enabled };
             AppFiles.SaveSettings(_settings);
+            if (_settings.ShapingEnabled) _state.Enable();
             await RefreshAsync();
             if (startup.Error is not null) Notify(startup.Error, ToolTipIcon.Warning);
             else if (warning is not null) Notify(warning, ToolTipIcon.Warning);
-            else if (firstInstall) Notify("Ready in the system tray. Limits are off; right-click the icon to Enable.");
+            else if (firstInstall) Notify(_state.Mode == RunMode.Enabled ?
+                "Ready in the system tray. Your saved limits are enabled." :
+                "Ready in the system tray. Limits are off; right-click the icon to Enable.");
         });
     }
 
@@ -122,14 +126,22 @@ internal sealed class TrayContext : ApplicationContext
         {
             _state.Disable();
             await StopEngineAsync();
+            SaveShapingChoice(false);
         }
         else
         {
-            if (_monitor is null || _monitor.Error is not null) await RefreshAsync();
-            if (_suspended) return;
-            StartEngine();
+            SaveShapingChoice(true);
             _state.Enable();
+            if (_monitor is null || _monitor.Error is not null) await RefreshAsync();
+            else StartEngine();
         }
+    }
+
+    private void SaveShapingChoice(bool enabled)
+    {
+        AppSettings proposed = _settings with { ShapingEnabled = enabled };
+        AppFiles.SaveSettings(proposed);
+        _settings = proposed;
     }
 
     private void StartEngine()
@@ -150,7 +162,7 @@ internal sealed class TrayContext : ApplicationContext
                         await StopEngineAsync();
                         Notify(error.Message, ToolTipIcon.Error);
                     }));
-                });
+                }, configureWorker: PacketScheduling.ConfigureWorker);
             _engine = created;
             if (created.IsStopping) throw new IOException("The shaping engine stopped during initialization. Networking remains unrestricted.");
         }
